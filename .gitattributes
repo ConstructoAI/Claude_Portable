@@ -1,0 +1,28 @@
+# =================================================================
+#  Claude Portable - regles de fins de ligne
+#
+#  🔴 Ce fichier n'est pas cosmetique. Un .bat stocke en LF se
+#  comporte mal sous cmd, et un fichier d'agent en CRLF ne
+#  s'enregistre pas : il disparait EN SILENCE, alors qu'une skill
+#  en CRLF, elle, fonctionne. Panne partielle, donc invisible.
+#  Lecon deja payee dans Gestionnaire-IA.
+# =================================================================
+
+# Defaut : tout en LF dans le depot
+* text=auto eol=lf
+
+# Windows : CRLF obligatoire
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+*.ps1  text eol=crlf
+
+# Binaires : aucune conversion
+*.exe  binary
+*.zip  binary
+*.7z   binary
+*.gguf binary
+*.ost  binary
+*.pst  binary
+*.png  binary
+*.jpg  binary
+*.ico  binary
