@@ -62,7 +62,21 @@ function Telecharger {
                "pypi.org, files.pythonhosted.org.")
     }
     if (-not (Test-Path -LiteralPath $Vers) -or (Get-Item -LiteralPath $Vers).Length -eq 0) {
-        throw "Telechargement de $Quoi vide depuis $hote (portail captif ou proxy ?)."
+        throw "Telechargement de $Quoi vide depuis $hote."
+    }
+    # 🔴 `Length -eq 0` NE PEUT PAS voir un portail captif : il rend ~149 octets
+    #    de HTML, pas zero. Mesure du 2026-08-31 : les trois telechargements
+    #    « reussissaient », puis mouraient a l'extraction sur une trace .NET
+    #    (« End of Central Directory » / « fichier endommage »). C'est la lecon
+    #    `curl -f` deja ecrite dans Lancer_Fabrication.bat, jamais transposee ici.
+    #    On lit donc les octets de tete : PK pour un zip/whl, MZ pour le SFX.
+    $tete = [System.IO.File]::ReadAllBytes($Vers)[0..1]
+    $magie = [char]$tete[0] + [string][char]$tete[1]
+    if ($magie -ne 'PK' -and $magie -ne 'MZ') {
+        Remove-Item -LiteralPath $Vers -Force -ErrorAction SilentlyContinue
+        throw ("$Quoi telecharge depuis $hote n'est ni une archive ni un executable " +
+               "(entete « $magie »). C'est presque toujours un portail captif ou un " +
+               "proxy qui a repondu une page web a la place du fichier.")
     }
 }
 
@@ -92,7 +106,18 @@ function Executer {
         } | Out-String).Trim()
         return [pscustomobject]@{ Code = $code; Sortie = $texte }
     } catch {
-        return [pscustomobject]@{ Code = -1; Sortie = $_.Exception.Message }
+        # 🔴 .Exception.Message NE SUFFIT PAS. Pour ApplicationFailedException --
+        #    exe corrompu, PE tronque, page HTML sauvee en .exe -- ce Message
+        #    CONTIENT DEJA la trace : « Au caractere ...:16 : 19 », la ligne
+        #    source et les tildes. Le filtre pose plus haut nettoyait le flux de
+        #    SORTIE ; la trace revenait par ici, et se retrouvait recopiee dans
+        #    $echecs, donc dans le rapport destine a Sylvain. Mesure : trois
+        #    copies, une par controle. On coupe donc a la premiere ligne utile.
+        $m = "$($_.Exception.Message)"
+        $i = $m.IndexOf("`nAu caract")
+        if ($i -lt 0) { $i = $m.IndexOf("`nAt line:") }
+        if ($i -gt 0) { $m = $m.Substring(0, $i) }
+        return [pscustomobject]@{ Code = -1; Sortie = $m.Trim() }
     } finally { $ErrorActionPreference = $prev }
 }
 
@@ -141,9 +166,15 @@ New-Item -ItemType Directory -Force -Path $dTravail | Out-Null
 #    Le script REFUSE de fabriquer plutot que de laisser passer.
 Etape 'Controle du contenu selon le profil'
 
+# 🔴 JOURNAL.md EN FAIT PARTIE, et il manquait. Le README et le BRIEF promettent
+#    tous deux « Memoire ETAT_* / JOURNAL : vierge » sur une cle de demonstration,
+#    et le BRIEF precise lui-meme que ce fichier « arrive NON vide » : 714 lignes
+#    de l'histoire du poste -- decisions, mesures, ce qu'elles ont coute -- qui
+#    partaient chez le client sous une case disant « vierge ».
 $fichiersMemoire = @(
     'ETAT_projets.md', 'ETAT_calendrier.md',
-    'ETAT_courriels_poste.md', 'ETAT_comptabilite.md'
+    'ETAT_courriels_poste.md', 'ETAT_comptabilite.md',
+    'JOURNAL.md'
 )
 
 if ($Profil -eq 'demonstration') {
@@ -229,7 +260,25 @@ if ($Profil -eq 'personnelle') {
 
     # L'URL de files.pythonhosted.org porte un repertoire de HACHAGE : elle
     # ne se construit pas a la main, il faut la demander a l'index.
-    $meta = Invoke-RestMethod -Uri "https://pypi.org/pypi/pywin32/$Pywin32Version/json" -UseBasicParsing
+    # 🔴 SEUL TELECHARGEMENT HORS DE `Telecharger`, et le pire a laisser nu.
+    #    Mesure du 2026-08-31 contre un serveur rendant 200 + HTML (portail
+    #    captif, proxy) : Invoke-RestMethod rend un XmlDocument ou une String,
+    #    $meta.urls vaut $null, et le message final accuse LE WHEEL avec une
+    #    liste de disponibles VIDE. Sylvain irait chercher une mauvaise version
+    #    de pywin32 pendant que la cause est le reseau. Et le chemin double-clic
+    #    traverse toujours cette ligne.
+    try {
+        $meta = Invoke-RestMethod -Uri "https://pypi.org/pypi/pywin32/$Pywin32Version/json" -UseBasicParsing -TimeoutSec 60
+    } catch {
+        throw ("Interrogation de l'index PyPI impossible (pypi.org).`n" +
+               "    Cause : $($_.Exception.Message)`n" +
+               "    Les quatre domaines a autoriser sont : python.org, github.com, " +
+               "pypi.org, files.pythonhosted.org.")
+    }
+    if ($meta -isnot [pscustomobject] -or -not $meta.urls) {
+        throw ("pypi.org a repondu autre chose que la fiche attendue (portail captif ou proxy ?).`n" +
+               "    Ce n'est PAS un probleme de version de pywin32.")
+    }
     $attendu = "pywin32-$Pywin32Version-$abi-$abi-win_amd64.whl"
     $info = $meta.urls | Where-Object { $_.filename -eq $attendu } | Select-Object -First 1
     if (-not $info) {
@@ -274,6 +323,39 @@ if ($Profil -eq 'personnelle') {
     }
     Set-Content -LiteralPath $pth.FullName -Value $lignes -Encoding ASCII
     Bon "$($pth.Name) : chemins pywin32 explicites (sans import site)"
+
+    # 🔴 LES QUATRE CHEMINS NE SUFFISENT PAS. Mesure du 2026-08-31, processus neuf
+    #    par import, 24 modules pywin32 :
+    #
+    #      4 chemins seuls            ->  4 / 24   (win32api, win32file, win32gui,
+    #                                     win32security... echouent en DLL load failed)
+    #      + import site              -> 23 / 24   mais ENABLE_USER_SITE = True
+    #      + les DLL ici              -> 23 / 24   et ENABLE_USER_SITE = None
+    #
+    #    Pourquoi : `pywin32.pth` porte QUATRE lignes actives, pas trois. La
+    #    quatrieme, `import pywin32_bootstrap`, est EXECUTABLE -- c'est elle qui
+    #    appelle os.add_dll_directory(). On ne peut pas la recopier : un ._pth
+    #    n'accepte que `import site`, tout autre import est ignore avec
+    #    « unsupported 'import' line » sur stderr (mesure faite).
+    #    Sans elle, seul `pywintypes.py` (chercheur en Python pur) charge la DLL,
+    #    et uniquement si un module l'importe d'abord : `import win32com.client`
+    #    marche, `import win32api` non. C'est le defaut que le code amont de
+    #    pywin32 documente mot pour mot.
+    #
+    #    ⚠️ ET CA FERME UN AUTRE TROU : _win32sysloader demande la DLL par NOM NU,
+    #    et System32 est dans l'ordre de recherche. Sur un poste ou pywin32 est
+    #    installe pour le meme Python, la cle pouvait lier la DLL de l'HOTE. Le
+    #    repertoire de l'application precede System32 : la copie tranche.
+    #    C'est ce que fait le post-install officiel de pywin32 en non-admin.
+    $sys32 = Join-Path $sp 'pywin32_system32'
+    if (Test-Path -LiteralPath $sys32) {
+        $dlls = @(Get-ChildItem -LiteralPath $sys32 -Filter '*.dll' -ErrorAction SilentlyContinue)
+        foreach ($d in $dlls) { Copy-Item -LiteralPath $d.FullName -Destination $dstPy -Force }
+        if ($dlls.Count -eq 0) { throw "pywin32_system32 ne contient aucune DLL : le wheel est incomplet." }
+        Bon "$($dlls.Count) DLL pywin32 posees a cote de python.exe"
+    } else {
+        throw "pywin32_system32 absent de $sp : le wheel n'a pas ete extrait correctement."
+    }
 }
 
 # ------------------------------------------------------------ 4. GitPortable
@@ -322,6 +404,15 @@ Etape 'Lanceur'
 $srcBat = Join-Path $PSScriptRoot 'Constructo_AI.bat'
 if (-not (Test-Path -LiteralPath $srcBat)) { throw "Constructo_AI.bat introuvable a cote de ce script." }
 Copy-Item -LiteralPath $srcBat -Destination $Cle -Force
+# 🔴 ET LE NETTOYEUR AVEC. Il n'etait PAS copie : le README documentait un
+#    double-clic sur un fichier absent de la cle. C'est l'outil qui efface le
+#    jeton Claude, les blobs d'identite Microsoft et le profil Chrome -- la cle
+#    les emporte, le moyen de les effacer restait sur le poste de fabrication.
+#    Et comme il fait `set "CLE=%~dp0"`, il ne nettoie QUE s'il est a la racine
+#    de la cle : le copier ailleurs ne servirait a rien.
+$srcNet = Join-Path $PSScriptRoot 'Nettoyer_Cle.bat'
+if (-not (Test-Path -LiteralPath $srcNet)) { throw "Nettoyer_Cle.bat introuvable a cote de ce script." }
+Copy-Item -LiteralPath $srcNet -Destination $Cle -Force
 Bon 'copie'
 
 # --------------------------------------------- 7. Verification du travail
@@ -329,9 +420,16 @@ Bon 'copie'
 Etape 'Verification'
 $echecs = @()
 
+# ⚠️ ost_reader.py et factures.py sont TOUT le mode inventaire -- le seul mode
+#    d'une cle de demonstration. Le controle d'execution d'ost_reader etait
+#    enveloppe d'un `if (Test-Path)` : absent, il ne s'executait pas, aucun echec
+#    n'etait collecte, et la cle etait declaree prete. Un faux zero par
+#    construction. Ils sont donc exiges ici.
 $attendus = @(
     'claude\claude.exe', 'python\python.exe',
-    'git\bin\bash.exe', '.claude\CLAUDE.md', 'Constructo_AI.bat'
+    'git\bin\bash.exe', '.claude\CLAUDE.md', 'Constructo_AI.bat',
+    'Nettoyer_Cle.bat',
+    '.claude\scripts\ost_reader.py', '.claude\scripts\factures.py'
 )
 foreach ($rel in $attendus) {
     $p = Join-Path $Cle $rel
