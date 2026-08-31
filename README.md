@@ -35,7 +35,8 @@ C'est un troisième objet, qui emprunte la portabilité du premier et le contenu
 
 ## Ce dépôt ne contient aucun binaire
 
-Ni `claude.exe`, ni Python, ni Git : environ 1 Go qui n'a rien à faire dans git. Le dépôt porte
+Ni `claude.exe`, ni Python, ni Git, ni `pywin32` : plusieurs centaines de Mo qui n'ont
+rien à faire dans git. Le dépôt porte
 le **script qui fabrique** la clé. Les binaires sont récupérés à la fabrication, une seule fois,
 sur votre poste.
 
@@ -56,9 +57,18 @@ powershell -ExecutionPolicy Bypass -File .\Fabriquer_Cle.ps1 `
   -Cle E:\ -Profil personnelle -SourceGestionnaire C:\chemin\vers\Gestionnaire-IA
 ```
 
-Le script télécharge Python et GitPortable, copie `claude.exe` et la couche `.claude\`, écrit le
-lanceur — puis **vérifie son propre travail** : `claude.exe` copié répond-il ? `python.exe`
-s'exécute-t-il vraiment ? Il ne dit « CLÉ PRÊTE » qu'après l'avoir constaté.
+Le script télécharge **quatre** choses — Python embeddable, GitPortable, le wheel `pywin32`
+(résolu sur l'index PyPI, l'ABI étant dérivée de la version de Python demandée) — copie
+`claude.exe` et la couche `.claude\`, puis copie le lanceur.
+
+Il **vérifie ensuite son propre travail, par exécution et non par présence** : `claude.exe`
+copié répond-il ? `python.exe` s'exécute-t-il ? `import win32com.client` passe-t-il, et la DLL
+résolue est-elle bien **sur la clé** ? `ost_reader.py --help` répond-il ? Il ne dit « CLÉ PRÊTE »
+qu'après l'avoir constaté, et il liste chaque échec au lieu de s'arrêter au premier.
+
+> ⚠️ Les quatre domaines à autoriser sur un réseau filtré : **python.org**, **github.com**,
+> **pypi.org**, **files.pythonhosted.org**. Un blocage sur l'un d'eux est nommé dans le message
+> d'erreur.
 
 > 💡 Fabriquez d'abord dans un dossier local (`-Cle C:\test_cle`), puis copiez sur la clé.
 > Sur USB 2.0, chaque essai raté coûte dix minutes ; sur le disque interne, quelques secondes.
@@ -72,6 +82,8 @@ s'exécute-t-il vraiment ? Il ne dit « CLÉ PRÊTE » qu'après l'avoir constat
 | Mémoire `ETAT_*` / `JOURNAL` | complète | **vierge** |
 | Profil de prix (`profiles/`) | présent | **absent** |
 | Permissions | `bypassPermissions` | `default` |
+| `pywin32` | installé | **absent** |
+| Mode au lancement | complet (MAPI) | **inventaire** (`ost_reader`) |
 
 `ETAT_projets.md` porte l'état de vos clients et le *pourquoi* de vos décisions.
 `ENTREPRENEUR_GENERAL_QC_profil.txt` porte vos coefficients cost-plus, vos taux CCQ et vos
@@ -139,7 +151,7 @@ lancement, Claude Code redemandera une connexion.
 | **Windows 10 1809+** | 64 bits |
 | **Poste de fabrication** | Claude Code installé, connexion internet — une seule fois |
 | **Outlook classique** | ⛔ uniquement pour le mode complet. Celui du Microsoft Store **n'expose pas MAPI/COM** |
-| **Espace** | ~1 Go sur la clé |
+| **Espace** | ~1 Go occupé sur la clé ; le script exige **2 Go libres** (marge d'extraction) |
 
 ---
 
@@ -152,9 +164,27 @@ n'est annoncé ici qui n'ait été constaté.
 |---|---|---|
 | M1 | `claude.exe` fonctionne hors de son dossier d'installation | ✅ `2.1.251` depuis un dossier copié |
 | M2 | Python embeddable exécute `ost_reader.py` | ✅ `3.13.1`, script répond |
+| M3 | `pywin32` dans le Python embeddable | ✅ **installé et vérifié par le script** — `import win32com.client` + `CoInitialize`, DLL résolue sur la clé |
 | M4 | Où atterrit le jeton de connexion | ✅ **sur la clé** — d'où le nettoyage |
-| M3 | `pywin32` déposé dans le Python embeddable | ⬜ non vérifié — le mode complet en dépend |
 | M5 | La clé sur un poste qui ne l'a pas fabriquée | ⬜ non vérifié |
+
+### 🔴 Ce que M3 a appris, et qui ne se devine pas
+
+Poser `Lib\site-packages` dans `python313._pth` **ne suffit pas** : `pywintypes` vit dans
+`win32\lib`, ajouté par le `pywin32.pth` du wheel — et un `.pth` n'est lu que si `site.main()`
+s'exécute. Mesuré, même wheel, même Python :
+
+| `python313._pth` | `import win32com.client` | `ENABLE_USER_SITE` |
+|---|---|---|
+| `Lib\site-packages` seul | 🔴 `ModuleNotFoundError: pywintypes` | — |
+| `+ import site` | ✅ | 🔴 **`True`** |
+| **chemins pywin32 explicites** | ✅ | ✅ **`None`** |
+
+La deuxième ligne marche **et ouvre la clé au poste hôte** : `import site` réactive le
+`%APPDATA%\Python\Python313\site-packages` de la machine visitée, dont un `usercustomize.py`
+s'exécuterait dans l'interpréteur de la clé. C'est exactement la promesse « rien du poste hôte »
+que ce projet vend. **Le script pose donc les chemins à la main** — `win32`, `win32\lib`,
+`pythonwin` — et laisse `import site` commenté.
 
 Détail complet dans [`docs/BRIEF.md`](docs/BRIEF.md).
 
