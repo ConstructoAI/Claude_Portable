@@ -128,10 +128,17 @@ settings.json                  bypassPermissions + 2 hooks PowerShell
 
 ---
 
-## 4. À MESURER — avant d'écrire le script de fabrication
+## 4. LES MESURES — M1 à M4 sont FAITES, seule M5 reste
+
+> 🔴 **Ce §4 disait « À MESURER — avant d'écrire le script de fabrication », et
+> le script fait 500 lignes.** Un lecteur qui suivait §0.2 rouvrait un chantier
+> livré. Corrigé le 2026-08-31 : **M1, M2, M3 et M4 sont établies**, et le
+> script les **refait à chaque fabrication** au lieu de les supposer.
+> Reste ouvert : **M5** (la clé sur un poste qui ne l'a pas fabriquée) et le
+> corollaire `claude update`, traité par précaution (`DISABLE_AUTOUPDATER=1`)
+> mais **non mesuré**.
 
 Ces cinq mesures se font sur une vraie machine Windows. `E:\` = la clé.
-**M1 seule débloque le script de fabrication.**
 
 ⚠️ Règle générale : une sortie vide n'est pas un succès. Un `--version` muet est un
 échec silencieux, pas une version.
@@ -167,20 +174,57 @@ vide. Confirmer avec `--limit 40` que de vrais messages sortent.
 ### M3 — `pywin32` sur le Python embeddable (mode complet seulement)
 
 L'embeddable n'a ni `pip` ni `site` actif (fichier `python3xx._pth`), et `pywin32`
-livre des DLL (`pythoncom3xx.dll`, `pywintypes3xx.dll`). Pour du **client** COM —
-ce que font les scripts — l'enregistrement système ne devrait pas être requis, il
-suffit que les DLL soient trouvables. *Devrait* n'est pas *mesuré.*
+livre des DLL (`pythoncom3xx.dll`, `pywintypes3xx.dll`). C'est **mesuré** depuis le
+2026-08-31, dans les deux sens — et le script installe et vérifie tout seul
+(`Fabriquer_Cle.ps1`, étape 3-bis). Ce qui suit n'est plus une marche à suivre
+manuelle : c'est ce que le script fait, écrit ici pour qu'on sache pourquoi.
+
+> 🔴 **LA RECETTE QUI FIGURAIT ICI NE FONCTIONNAIT PAS.** Elle disait d'ajouter
+> `Lib\site-packages` au `_pth` et de bricoler le `PATH`. Mesuré :
+>
+> | `python313._pth` | `import win32com.client` | les 24 modules | `ENABLE_USER_SITE` |
+> |---|---|---|---|
+> | `Lib\site-packages` seul | 🔴 `ModuleNotFoundError: pywintypes` | 0 / 24 | — |
+> | + les 3 chemins de `pywin32.pth` | ✅ | **4 / 24** | `None` |
+> | + `import site` | ✅ | 23 / 24 | 🔴 **`True`** |
+> | + **les DLL à côté de `python.exe`** | ✅ | **24 / 24** | ✅ `None` |
+>
+> Trois choses que la recette ignorait :
+> 1. `pywintypes` vit dans `win32\lib`, ajouté par le `pywin32.pth` du wheel — et
+>    un `.pth` n'est lu que si `site.main()` s'exécute.
+> 2. `pywin32.pth` porte **quatre** lignes actives ; la quatrième,
+>    `import pywin32_bootstrap`, est **exécutable** et appelle
+>    `os.add_dll_directory()`. On ne peut pas la recopier dans un `._pth` :
+>    Python rend « unsupported 'import' line » et l'ignore.
+> 3. `import site` **ouvre la clé au poste hôte** — le
+>    `%APPDATA%\Python\...\site-packages` de la machine visitée entre dans
+>    `sys.path`, `usercustomize.py` compris. Mesuré : il s'exécute.
+>
+> ⚠️ Et le `set "PATH=...pywin32_system32"` est **mesuré inutile** : `win32api`
+> échoue avec ou sans. Il ne « marchait » que pour `win32com.client`, qui marche
+> déjà sans lui.
 
 ```bat
-rem wheel cp313-win_amd64 décompressé dans E:\python\Lib\site-packages\
-rem puis ajouter "Lib\site-packages" dans python313._pth (ligne sans #)
-set "PATH=E:\python\Lib\site-packages\pywin32_system32;%PATH%"
-E:\python\python.exe -c "import win32com.client; print('ok')"
+rem Ce que le script fait, et qui est verifie :
+rem   - wheel cp3xx-win_amd64 decompresse dans E:\python\Lib\site-packages\
+rem   - 4 lignes dans python3xx._pth : Lib\site-packages, ...\win32,
+rem     ...\win32\lib, ...\pythonwin   (et surtout PAS `import site`)
+rem   - pywin32_system32\*.dll copiees A COTE de python.exe
+E:\python\python.exe -c "import win32api, win32com.client, pythoncom; print(pythoncom.__file__)"
+E:\python\python.exe -c "import site; print(site.ENABLE_USER_SITE)"
 E:\python\python.exe "E:\.claude\scripts\outlook_mail.py" folders
 ```
 
-Repli acceptable si échec : `pywin32` installé normalement sur les postes de
-Sylvain, et clé limitée au mode inventaire ailleurs.
+⚠️ **Le contrôle doit porter sur `win32api`, pas seulement `win32com.client`.**
+`win32com.client` est le **seul** import qui passe quand les DLL manquent : le
+tester seul rend un vert qui ne prouve que lui-même. Et `pythoncom.__file__`
+doit commencer par la lettre de la clé — sinon c'est le pywin32 du poste de
+fabrication qui a répondu, et la clé n'est pas autonome.
+
+⚠️ **Il n'y a plus de « repli acceptable » côté fabrication** : un import raté
+est collecté dans `$echecs`, donc `exit 1` et « FABRICATION INCOMPLETE ». Le
+repli subsiste côté **lanceur** (`Constructo_AI.bat` bascule en mode inventaire
+et l'annonce), et côté **profil démonstration**, qui ne reçoit jamais pywin32.
 
 ### M4 — Où atterrit la connexion Claude
 

@@ -220,11 +220,15 @@ Bon 'copie faite'
 # ----------------------------------------------------- 3. Python embeddable
 Etape "Python $PythonVersion (embeddable)"
 $dstPy = Join-Path $Cle 'python'
-if (Test-Path -LiteralPath $dstPy) { Remove-Item -LiteralPath $dstPy -Recurse -Force }
 $zipPy = Join-Path $dTravail 'python-embed.zip'
 $urlPy = "https://www.python.org/ftp/python/$PythonVersion/python-$PythonVersion-embed-amd64.zip"
 Note $urlPy
 Telecharger $urlPy $zipPy 'Python embeddable'
+# 🔴 SUPPRIMER SEULEMENT UNE FOIS L'ARCHIVE EN MAIN. L'ancien ordre effacait
+#    python\ AVANT le telechargement : une coupure reseau laissait alors la cle
+#    PIRE qu'avant -- on relance une fabrication sur une cle qui marchait, et on
+#    repart avec un dossier en moins. Meme correction pour git\ plus bas.
+if (Test-Path -LiteralPath $dstPy) { Remove-Item -LiteralPath $dstPy -Recurse -Force }
 Expand-Archive -LiteralPath $zipPy -DestinationPath $dstPy -Force
 Bon 'extrait'
 
@@ -361,11 +365,12 @@ if ($Profil -eq 'personnelle') {
 # ------------------------------------------------------------ 4. GitPortable
 Etape "GitPortable $GitVersion"
 $dstGit = Join-Path $Cle 'git'
-if (Test-Path -LiteralPath $dstGit) { Remove-Item -LiteralPath $dstGit -Recurse -Force }
 $exeGit = Join-Path $dTravail 'GitPortable.exe'
 $urlGit = "https://github.com/git-for-windows/git/releases/download/v$GitVersion.windows.1/PortableGit-$GitVersion-64-bit.7z.exe"
 Note $urlGit
 Telecharger $urlGit $exeGit 'GitPortable'
+# Meme raison qu'a l'etape 3 : on n'efface qu'une fois l'archive en main.
+if (Test-Path -LiteralPath $dstGit) { Remove-Item -LiteralPath $dstGit -Recurse -Force }
 & $exeGit "-o$dstGit" -y | Out-Null
 if (-not (Test-Path -LiteralPath (Join-Path $dstGit 'bin\bash.exe'))) {
     throw "Extraction de GitPortable incomplete : bin\bash.exe absent."
@@ -456,6 +461,7 @@ if ($r.Code -ne 0 -or [string]::IsNullOrWhiteSpace($r.Sortie)) {
     $echecs += "claude.exe copie ne repond pas. Sortie : $($r.Sortie)"
 } else {
     Bon "claude.exe : $($r.Sortie)"
+    $vClaudeVersion = $r.Sortie
 }
 
 $pyExe = Join-Path $Cle 'python\python.exe'
@@ -511,6 +517,23 @@ if ($echecs.Count -gt 0) {
     Write-Host "`n  La cle n'est pas utilisable en l'etat. Rien n'est masque." -ForegroundColor Red
     exit 1
 }
+
+# 🔴 UN MARQUEUR, parce que rien sur la cle ne disait si elle etait finie. Une
+#    cle complete et une cle abandonnee en cours de route etaient indiscernables
+#    dans l'explorateur. Ecrit EN DERNIER, apres que tous les controles sont
+#    passes : sa presence est la seule preuve qu'ils l'ont ete.
+$marqueur = Join-Path $Cle 'CLE_PRETE.txt'
+@(
+    "Cle Claude Portable - fabriquee le $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+    "Profil        : $Profil"
+    "Claude Code   : $($vClaudeVersion)"
+    "Python        : $PythonVersion"
+    "GitPortable   : $GitVersion"
+    "pywin32       : $(if ($Profil -eq 'personnelle') { $Pywin32Version } else { 'absent (profil demonstration)' })"
+    ""
+    "Ce fichier n'est ecrit QUE si tous les controles de fabrication sont passes."
+    "S'il manque, la cle est incomplete : ne la distribuez pas."
+) | Set-Content -LiteralPath $marqueur -Encoding UTF8
 
 Write-Host '=========================================================' -ForegroundColor Green
 Write-Host '  CLE PRETE' -ForegroundColor Green
